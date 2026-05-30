@@ -62,11 +62,6 @@ export default function CreateProfile() {
       return;
     }
 
-    if (profileType === 'pet' && user?.subscription_status === 'free') {
-      Alert.alert('Premium Required', 'Pet profiles require Premium subscription');
-      return;
-    }
-
     setLoading(true);
     try {
       const profileData: any = {
@@ -141,27 +136,12 @@ export default function CreateProfile() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  profileType === 'pet' && styles.typeButtonActive,
-                  user?.subscription_status === 'free' && styles.typeButtonLocked,
-                ]}
-                onPress={() => {
-                  if (user?.subscription_status === 'free') {
-                    Alert.alert('Premium Required', 'Pet profiles require Premium subscription');
-                  } else {
-                    setProfileType('pet');
-                  }
-                }}
+                style={[styles.typeButton, profileType === 'pet' && styles.typeButtonActive]}
+                onPress={() => setProfileType('pet')}
                 testID="profile-type-pet"
               >
                 <Ionicons name="paw" size={24} color={profileType === 'pet' ? '#00d4ff' : '#808080'} />
                 <Text style={[styles.typeText, profileType === 'pet' && styles.typeTextActive]}>Pet</Text>
-                {user?.subscription_status === 'free' && (
-                  <View style={styles.lockBadge}>
-                    <Ionicons name="lock-closed" size={12} color="#ffaa00" />
-                  </View>
-                )}
               </TouchableOpacity>
             </View>
           </View>

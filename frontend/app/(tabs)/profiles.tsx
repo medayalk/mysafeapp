@@ -37,11 +37,7 @@ export default function Profiles() {
     setRefreshing(false);
   };
 
-  const canAddProfile = () => {
-    if (user?.subscription_status === 'premium') return true;
-    const humanProfiles = profiles.filter(p => p.profile_type === 'human').length;
-    return humanProfiles < 1;
-  };
+  const canAddProfile = () => true; // All features unlocked
 
   return (
     <LinearGradient colors={['#0a0a0a', '#1a1a2e']} style={styles.container}>
@@ -108,32 +104,12 @@ export default function Profiles() {
         </View>
 
         <TouchableOpacity 
-          style={[
-            styles.addButton,
-            !canAddProfile() && styles.addButtonDisabled,
-          ]}
-          onPress={() => {
-            if (canAddProfile()) {
-              router.push('/profile/create');
-            } else {
-              router.push('/(tabs)/settings');
-            }
-          }}
+          style={styles.addButton}
+          onPress={() => router.push('/profile/create')}
         >
           <Ionicons name="add-circle-outline" size={24} color="#00d4ff" />
-          <Text style={styles.addButtonText}>
-            {canAddProfile() ? 'Add New Profile' : 'Upgrade to Add More Profiles'}
-          </Text>
+          <Text style={styles.addButtonText}>Add New Profile</Text>
         </TouchableOpacity>
-
-        {user?.subscription_status === 'free' && (
-          <View style={styles.limitInfo}>
-            <Ionicons name="information-circle" size={20} color="#ffaa00" />
-            <Text style={styles.limitText}>
-              Free tier: 1 human profile only. Upgrade for unlimited profiles & pets.
-            </Text>
-          </View>
-        )}
       </ScrollView>
     </LinearGradient>
   );

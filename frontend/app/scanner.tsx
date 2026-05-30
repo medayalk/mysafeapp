@@ -132,6 +132,9 @@ export default function Scanner() {
         facing="back"
         autofocus={autofocus}
         enableTorch={torch}
+        zoom={0}
+        selectedLens={Platform.OS === 'ios' ? 'builtInWideAngleCamera' : undefined}
+        mode="picture"
       >
         <Pressable style={styles.overlay} onPress={handleCameraTap} testID="camera-tap-area">
           <View style={styles.header}>

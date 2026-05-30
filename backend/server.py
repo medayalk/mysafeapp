@@ -423,15 +423,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 @api_router.post("/profiles", response_model=Profile)
 async def create_profile(profile_data: ProfileCreate, current_user: dict = Depends(get_current_user)):
-    # Check subscription limits
-    existing_profiles = await db.profiles.find({"user_id": current_user["id"]}).to_list(100)
-    
-    if current_user.get("subscription_status", "free") == "free":
-        if len(existing_profiles) >= 1 and profile_data.profile_type == "human":
-            raise HTTPException(status_code=403, detail="Free tier limited to 1 human profile. Upgrade to Premium.")
-        if profile_data.profile_type == "pet":
-            raise HTTPException(status_code=403, detail="Pet profiles require Premium subscription")
-    
+    # All features unlocked - freemium gates removed
     profile = Profile(
         user_id=current_user["id"],
         **profile_data.dict()
@@ -459,10 +451,9 @@ async def create_scan(scan_data: ScanCreate, current_user: dict = Depends(get_cu
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     
-    # Check subscription limits
-    if current_user.get("subscription_status", "free") == "free":
-        # Free tier can only scan food
-        pass  # We'll check category after OCR
+    # Check subscription limits (DISABLED - all features unlocked)
+    # if current_user.get("subscription_status", "free") == "free":
+    #     pass  # We'll check category after OCR
     
     # Perform OCR
     ocr_text, is_clear = await ocr_with_gemini_vision(scan_data.image_base64)
@@ -476,9 +467,7 @@ async def create_scan(scan_data: ScanCreate, current_user: dict = Depends(get_cu
     # Detect category
     category = detect_category(ocr_text)
     
-    # Check free tier limitations
-    if current_user.get("subscription_status", "free") == "free" and category == "cosmetic":
-        raise HTTPException(status_code=403, detail="Cosmetic scanning requires Premium subscription")
+    # Cosmetic scanning is now FREE for everyone
     
     # Score with AI
     scoring_result = await score_with_ai(ocr_text, category, profile)
@@ -521,10 +510,7 @@ async def get_scan(scan_id: str, current_user: dict = Depends(get_current_user))
 
 @api_router.post("/compare", response_model=ComparisonResult)
 async def compare_scans(scan1_id: str, scan2_id: str, current_user: dict = Depends(get_current_user)):
-    # Check subscription
-    if current_user.get("subscription_status", "free") == "free":
-        raise HTTPException(status_code=403, detail="Product comparison requires Premium subscription")
-    
+    # Comparison is now FREE for everyone
     # Get both scans
     scan1 = await db.scans.find_one({"id": scan1_id, "user_id": current_user["id"]})
     scan2 = await db.scans.find_one({"id": scan2_id, "user_id": current_user["id"]})
