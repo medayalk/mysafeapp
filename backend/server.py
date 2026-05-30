@@ -75,6 +75,7 @@ class ProfileCreate(BaseModel):
     allergies: Optional[List[str]] = []
     # Pet fields
     pet_type: Optional[Literal["dog", "cat", "bird", "exotic"]] = None
+    pet_breed: Optional[str] = None
     fixed_status: Optional[Literal["neutered", "spayed", "intact"]] = None
     pet_medical_conditions: Optional[List[str]] = []
 
@@ -95,6 +96,7 @@ class Profile(BaseModel):
     medical_conditions: Optional[List[str]] = []
     allergies: Optional[List[str]] = []
     pet_type: Optional[Literal["dog", "cat", "bird", "exotic"]] = None
+    pet_breed: Optional[str] = None
     fixed_status: Optional[Literal["neutered", "spayed", "intact"]] = None
     pet_medical_conditions: Optional[List[str]] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -112,6 +114,7 @@ class Scan(BaseModel):
     image_base64: str
     ocr_text: str
     category: Literal["food", "cosmetic", "unknown"]
+    subcategory: Optional[str] = "unknown"  # food/beverage/snack/supplement/skin_care/hair_care/body_care/oral_care/makeup/fragrance/pet_food/pet_care/unknown
     score: float  # 0-10
     verdict: Literal["safe", "caution", "unhealthy", "danger"]
     flagged_ingredients: List[Dict[str, str]]
@@ -189,35 +192,62 @@ def get_age_category(age_months: int) -> str:
     else:
         return "adult"
 
-async def ocr_with_gemini_vision(image_base64: str) -> tuple[str, bool]:
+async def ocr_with_gemini_vision(image_base64: str) -> tuple[str, bool, str, str]:
     """
-    Use Gemini Vision to extract text from image
-    Returns: (extracted_text, is_clear)
+    Use Gemini Vision (Flash for speed) to extract text + category + subcategory in ONE call.
+    Returns: (extracted_text, is_clear, category, subcategory)
     """
     try:
         api_key = os.getenv("EMERGENT_LLM_KEY")
         chat = LlmChat(
             api_key=api_key,
             session_id=f"ocr-{uuid.uuid4()}",
-            system_message="You are an OCR expert. Extract ALL text from ingredient labels accurately. If the image is blurry or unclear, respond with 'UNCLEAR_IMAGE'."
+            system_message="""You are an OCR and product classification expert. From the image:
+1. Extract ALL ingredient text exactly as shown.
+2. Classify the product into category and subcategory.
+
+Categories: food | cosmetic | unknown
+Subcategories:
+  - food: food, beverage, snack, supplement, pet_food
+  - cosmetic: skin_care, hair_care, body_care, oral_care, makeup, fragrance, pet_care
+  - unknown: unknown
+
+Respond in this EXACT JSON format (no extra text):
+{"text": "ingredients...", "category": "food|cosmetic|unknown", "subcategory": "..."}
+
+If the image is too blurry or unclear to read ingredients confidently, respond with:
+{"text": "UNCLEAR", "category": "unknown", "subcategory": "unknown"}"""
         )
-        chat.with_model("gemini", "gemini-3.1-pro-preview")
+        # Use Flash for speed (3-5x faster than Pro)
+        chat.with_model("gemini", "gemini-3-flash-preview")
         
         msg = UserMessage(
-            text="Extract all ingredient text from this label. List ingredients exactly as shown. If the image is too blurry or unclear to read ingredients confidently, respond with only 'UNCLEAR_IMAGE'.",
+            text="Extract ingredients and classify this product. Return JSON only.",
             file_contents=[ImageContent(image_base64)]
         )
         
         response = await chat.send_message(msg)
         
-        if "UNCLEAR_IMAGE" in response.upper() or len(response.strip()) < 10:
-            return "", False
+        # Parse JSON
+        import json
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
+        if json_start < 0 or json_end <= json_start:
+            return "", False, "unknown", "unknown"
         
-        return response.strip(), True
+        data = json.loads(response[json_start:json_end])
+        text = data.get("text", "").strip()
+        category = data.get("category", "unknown")
+        subcategory = data.get("subcategory", "unknown")
+        
+        if text == "UNCLEAR" or len(text) < 10:
+            return "", False, "unknown", "unknown"
+        
+        return text, True, category, subcategory
         
     except Exception as e:
         logging.error(f"OCR Error: {e}")
-        return "", False
+        return "", False, "unknown", "unknown"
 
 def detect_category(ingredients_text: str) -> str:
     """Detect if product is food or cosmetic based on ingredients"""
@@ -276,6 +306,8 @@ async def score_with_ai(ingredients_text: str, category: str, profile: Dict) -> 
             else:
                 age_display = f"{profile.get('age_value', 0)} {profile.get('age_unit', 'years')}"
             profile_context += f"Pet Type: {profile.get('pet_type', 'unknown')}\n"
+            if profile.get('pet_breed'):
+                profile_context += f"Breed: {profile.get('pet_breed')}\n"
             profile_context += f"Age: {age_display}\n"
             profile_context += f"Weight: {profile.get('weight_kg', 0)} kg\n"
             profile_context += f"Fixed Status: {profile.get('fixed_status', 'unknown')}\n"
@@ -307,7 +339,8 @@ Return JSON format:
             session_id=f"score-{uuid.uuid4()}",
             system_message=system_prompt
         )
-        chat.with_model("anthropic", "claude-sonnet-4-6")
+        # Use Haiku for speed (3x faster than Sonnet) - scoring rules are simple enough
+        chat.with_model("anthropic", "claude-haiku-4-5-20251001")
         
         prompt = f"""Analyze these {category} ingredients for this profile:
 
@@ -451,23 +484,14 @@ async def create_scan(scan_data: ScanCreate, current_user: dict = Depends(get_cu
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     
-    # Check subscription limits (DISABLED - all features unlocked)
-    # if current_user.get("subscription_status", "free") == "free":
-    #     pass  # We'll check category after OCR
-    
-    # Perform OCR
-    ocr_text, is_clear = await ocr_with_gemini_vision(scan_data.image_base64)
+    # Perform OCR + category detection in single Gemini Flash call (fast)
+    ocr_text, is_clear, category, subcategory = await ocr_with_gemini_vision(scan_data.image_base64)
     
     if not is_clear or not ocr_text:
         raise HTTPException(
             status_code=400,
             detail="Image unclear. Please ensure the ingredients are in focus and scan again."
         )
-    
-    # Detect category
-    category = detect_category(ocr_text)
-    
-    # Cosmetic scanning is now FREE for everyone
     
     # Score with AI
     scoring_result = await score_with_ai(ocr_text, category, profile)
@@ -478,7 +502,8 @@ async def create_scan(scan_data: ScanCreate, current_user: dict = Depends(get_cu
         profile_id=scan_data.profile_id,
         image_base64=scan_data.image_base64,
         ocr_text=ocr_text,
-        category=category,
+        category=category if category in ("food", "cosmetic", "unknown") else "unknown",
+        subcategory=subcategory,
         score=scoring_result["score"],
         verdict=scoring_result["verdict"],
         flagged_ingredients=scoring_result["flagged_ingredients"],

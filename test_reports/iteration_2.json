@@ -1,0 +1,48 @@
+{
+  "summary": "Backend-only re-test after MySafe feature additions: pet_breed on Profile, subcategory on Scan, Gemini Flash + Claude Haiku speed-up, auto-login flow. Updated /app/backend/tests/test_mysafe_api.py (24 tests) to drop the now-obsolete free-tier gate assertions (freemium removed per server.py) and added new coverage: (1) pet_breed stored/returned for dog=Labrador Retriever, cat=Persian, bird=Cockatiel, (2) subcategory key present in GET /api/scans response, (3) auto-login flow (token -> /auth/me + /profiles), (4) speed measurement on /api/scan unclear-image rejection. ALL 24/24 TESTS PASSED. Gemini Flash unclear-image rejection completed in 2.18s (significantly faster than previous Pro model). Image-unclear still correctly returns HTTP 400 (no 10/10 default). No critical issues.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "auth/*", "issue": "passlib still emits 'AttributeError: module bcrypt has no attribute __about__' warning on first hash (bcrypt 4.x + passlib 1.7.x). Functionality unaffected; pin bcrypt<4 or upgrade passlib to silence."},
+      {"endpoint": "/api/compare", "issue": "Uses query params (scan1_id, scan2_id) instead of JSON body — inconsistent with other POST endpoints."},
+      {"endpoint": "/api/auth/me, /api/profiles (no token)", "issue": "FastAPI HTTPBearer returns 403 instead of 401 when Authorization header missing. Tests accept both; spec says 401."},
+      {"endpoint": "/api/scan", "issue": "Real scan with a legible ingredient image was NOT executed (would consume LLM quota). subcategory value end-to-end is only structurally verified (key present + Pydantic literal accepted). Recommend a one-off manual scan with a real photo to confirm Gemini returns the expected subcategory strings (food/beverage/skin_care/etc.)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mysafe_api.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Pin bcrypt<4 or upgrade passlib to silence the bcrypt __about__ warning.",
+    "(Optional) Switch /api/compare to a JSON body for consistency with other POST endpoints.",
+    "(Optional) Add DELETE endpoints for profiles & scans (cleanup currently goes through direct MongoDB).",
+    "(Suggested) Add server-side validation that subcategory is one of the documented set (food/beverage/snack/supplement/skin_care/hair_care/body_care/oral_care/makeup/fragrance/pet_food/pet_care/unknown) before persisting — currently it is a free-form Optional[str], so a misbehaving model can store anything.",
+    "(Suggested) Consider validating pet_breed against pet_type (e.g., Persian only allowed for cats) — currently any string is accepted for any pet_type."
+  ],
+  "critical_code_review_comments": [
+    "ocr_with_gemini_vision now returns 4-tuple (text, is_clear, category, subcategory) — matches handler unpacking in create_scan. Good.",
+    "Scan.subcategory is Optional[str] (free-form) while category is a Literal — inconsistent typing. Consider tightening subcategory to a Literal union to prevent garbage from the model.",
+    "create_scan persists category if it is in ('food','cosmetic','unknown') else 'unknown', but does NO similar sanitisation for subcategory. A non-standard subcategory string from Gemini will be stored as-is.",
+    "JWT_SECRET_KEY still falls back to hardcoded 'your-secret-key-change-in-production' — fine for dev, must be set in prod.",
+    "score_with_ai falls back to score=5.0/'caution' on JSON parse/exception — good defensive behaviour, not 10/10.",
+    "server.py is now ~600 lines — approaching the 700-line split threshold. Consider routers (auth/profiles/scans/compare) + services.py for AI calls.",
+    "Scan stores full image_base64 in MongoDB — could bloat documents at scale (consider GridFS or external object storage)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mysafe_api.py (rewritten: dropped free-tier 403 expectations, added pet_breed + subcategory + auto-login + speed tests)"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "N/A (skipped per request)"},
+  "seed_data_creation": "Each run registers TEST_new_<timestamp>@mysafe.com + creates 2 human + 3 pet profiles (dog/cat/bird with breeds). Session-scoped autouse fixture deletes user, profiles and scans via direct MongoDB at session end. Existing test@mysafe.com user is untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All MySafe backend endpoints validated against the new schema (pet_breed + subcategory). Tests live in /app/backend/tests/test_mysafe_api.py — reusable. Notes: (1) free-tier gating was removed in server.py — any future test that asserts 403 for second profile / pet profile / compare must be updated. (2) Real-image scan path is exercised only via the 1x1 blank PNG path (rejected with 400) — subcategory value is structurally verified, not semantically. (3) Gemini model id in use: 'gemini-3-flash-preview'; Claude: 'claude-haiku-4-5-20251001'; both reachable via emergentintegrations. (4) Measured speed for unclear-image /api/scan call = 2.18s end-to-end through the public preview URL.",
+  "rca_of_issue": "N/A — no failures."
+}

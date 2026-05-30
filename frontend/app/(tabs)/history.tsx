@@ -12,12 +12,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useStore } from '@/src/store';
 import { getScans } from '@/src/services/api';
 import { useRouter } from 'expo-router';
+import { SCAN_CATEGORIES } from '@/src/constants/breeds';
 
 export default function History() {
   const router = useRouter();
   const { activeProfile, scans, setScans } = useStore();
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'food' | 'cosmetic'>('all');
+  const [filter, setFilter] = useState<string>('all');
 
   const loadScans = async () => {
     try {
@@ -40,7 +41,15 @@ export default function History() {
 
   const filteredScans = filter === 'all' 
     ? scans 
-    : scans.filter(s => s.category === filter);
+    : scans.filter((s: any) => {
+        // Match either category or subcategory
+        const sub = (s.subcategory || 'unknown').toLowerCase();
+        const cat = (s.category || 'unknown').toLowerCase();
+        // Legacy filter compatibility
+        if (filter === 'food' && cat === 'food') return true;
+        if (filter === 'cosmetic' && cat === 'cosmetic') return true;
+        return sub === filter;
+      });
 
   const getScoreColor = (score: number) => {
     if (score >= 8) return '#00ff88';
@@ -59,39 +68,68 @@ export default function History() {
     }
   };
 
+  const formatSubcategory = (sub?: string) => {
+    if (!sub) return '';
+    return sub.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  };
+
+  // Count scans per category for badges
+  const getCategoryCount = (categoryKey: string): number => {
+    if (categoryKey === 'all') return scans.length;
+    return scans.filter((s: any) => {
+      const sub = (s.subcategory || 'unknown').toLowerCase();
+      const cat = (s.category || 'unknown').toLowerCase();
+      if (categoryKey === 'food' && cat === 'food') return true;
+      if (categoryKey === 'cosmetic' && cat === 'cosmetic') return true;
+      return sub === categoryKey;
+    }).length;
+  };
+
   return (
     <LinearGradient colors={['#0a0a0a', '#1a1a2e']} style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Scan History</Text>
-        <Text style={styles.subtitle}>Profile: {activeProfile?.name}</Text>
+        <Text style={styles.subtitle}>Profile: {activeProfile?.name || 'None'}</Text>
       </View>
 
-      <View style={styles.filters}>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'all' && styles.filterButtonActive]}
-          onPress={() => setFilter('all')}
-        >
-          <Text style={[styles.filterText, filter === 'all' && styles.filterTextActive]}>
-            All
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'food' && styles.filterButtonActive]}
-          onPress={() => setFilter('food')}
-        >
-          <Text style={[styles.filterText, filter === 'food' && styles.filterTextActive]}>
-            Food
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterButton, filter === 'cosmetic' && styles.filterButtonActive]}
-          onPress={() => setFilter('cosmetic')}
-        >
-          <Text style={[styles.filterText, filter === 'cosmetic' && styles.filterTextActive]}>
-            Cosmetic
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {/* Horizontal scrollable category filter */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filtersScroll}
+        contentContainerStyle={styles.filtersContent}
+      >
+        {SCAN_CATEGORIES.map((cat) => {
+          const count = getCategoryCount(cat.key);
+          const isActive = filter === cat.key;
+          // Hide categories with 0 scans except "All"
+          if (cat.key !== 'all' && count === 0) return null;
+          return (
+            <TouchableOpacity
+              key={cat.key}
+              style={[styles.filterButton, isActive && styles.filterButtonActive]}
+              onPress={() => setFilter(cat.key)}
+              testID={`filter-${cat.key}`}
+            >
+              <Ionicons 
+                name={cat.icon} 
+                size={16} 
+                color={isActive ? '#00d4ff' : '#808080'} 
+              />
+              <Text style={[styles.filterText, isActive && styles.filterTextActive]}>
+                {cat.label}
+              </Text>
+              {count > 0 && (
+                <View style={[styles.countBadge, isActive && styles.countBadgeActive]}>
+                  <Text style={[styles.countText, isActive && styles.countTextActive]}>
+                    {count}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
 
       <ScrollView 
         style={styles.scrollView}
@@ -103,10 +141,13 @@ export default function History() {
           <View style={styles.emptyState}>
             <Ionicons name="time-outline" size={64} color="#404040" />
             <Text style={styles.emptyText}>No scans found</Text>
+            <Text style={styles.emptySubtext}>
+              {filter === 'all' ? 'Start scanning to see results' : 'No scans in this category yet'}
+            </Text>
           </View>
         ) : (
           <View style={styles.list}>
-            {filteredScans.map((scan) => (
+            {filteredScans.map((scan: any) => (
               <TouchableOpacity
                 key={scan.id}
                 style={styles.scanCard}
@@ -125,7 +166,9 @@ export default function History() {
                     </Text>
                   </View>
                   <View style={styles.scanInfo}>
-                    <Text style={styles.scanCategory}>{scan.category}</Text>
+                    <Text style={styles.scanCategory}>
+                      {formatSubcategory(scan.subcategory) || scan.category}
+                    </Text>
                     <View style={[
                       styles.verdictBadge,
                       { backgroundColor: `${getVerdictColor(scan.verdict)}20` }
@@ -153,33 +196,22 @@ export default function History() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     padding: 24,
     paddingTop: 60,
     alignItems: 'center',
   },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#808080',
-  },
-  filters: {
-    flexDirection: 'row',
-    paddingHorizontal: 24,
-    gap: 12,
-    marginBottom: 16,
-  },
+  title: { fontSize: 28, fontWeight: 'bold', color: '#ffffff', marginBottom: 8 },
+  subtitle: { fontSize: 14, color: '#808080' },
+  filtersScroll: { maxHeight: 56, marginBottom: 8 },
+  filtersContent: { paddingHorizontal: 24, gap: 8, alignItems: 'center' },
   filterButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 20,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
@@ -189,21 +221,28 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 212, 255, 0.2)',
     borderColor: '#00d4ff',
   },
-  filterText: {
-    fontSize: 14,
-    color: '#808080',
-    fontWeight: '600',
+  filterText: { fontSize: 13, color: '#808080', fontWeight: '600' },
+  filterTextActive: { color: '#00d4ff' },
+  countBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginLeft: 2,
   },
-  filterTextActive: {
-    color: '#00d4ff',
+  countBadgeActive: {
+    backgroundColor: '#00d4ff',
   },
-  scrollView: {
-    flex: 1,
+  countText: {
+    fontSize: 11,
+    color: '#a0a0a0',
+    fontWeight: 'bold',
   },
-  list: {
-    padding: 24,
-    gap: 12,
+  countTextActive: {
+    color: '#000000',
   },
+  scrollView: { flex: 1 },
+  list: { padding: 24, gap: 12 },
   scanCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -227,13 +266,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  scoreText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  scanInfo: {
-    gap: 4,
-  },
+  scoreText: { fontSize: 20, fontWeight: 'bold' },
+  scanInfo: { gap: 4 },
   scanCategory: {
     fontSize: 16,
     fontWeight: '600',
@@ -246,14 +280,8 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignSelf: 'flex-start',
   },
-  verdictText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  scanDate: {
-    fontSize: 12,
-    color: '#808080',
-  },
+  verdictText: { fontSize: 10, fontWeight: 'bold' },
+  scanDate: { fontSize: 12, color: '#808080' },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
@@ -265,5 +293,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#ffffff',
     marginTop: 16,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: '#808080',
+    marginTop: 8,
   },
 });

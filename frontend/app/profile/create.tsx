@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useStore } from '@/src/store';
 import { createProfile, getProfiles } from '@/src/services/api';
+import { getBreedsForPetType } from '@/src/constants/breeds';
 
 export default function CreateProfile() {
   const router = useRouter();
@@ -40,6 +41,8 @@ export default function CreateProfile() {
   
   // Pet fields
   const [petType, setPetType] = useState<'dog' | 'cat' | 'bird' | 'exotic'>('dog');
+  const [petBreed, setPetBreed] = useState<string>('');
+  const [showBreedPicker, setShowBreedPicker] = useState(false);
   const [fixedStatus, setFixedStatus] = useState<'neutered' | 'spayed' | 'intact'>('intact');
 
   const formatDob = (d: Date | null): string => {
@@ -77,6 +80,7 @@ export default function CreateProfile() {
         profileData.height_cm = height ? parseFloat(height) : undefined;
       } else {
         profileData.pet_type = petType;
+        profileData.pet_breed = petBreed || undefined;
         profileData.fixed_status = fixedStatus;
       }
 
@@ -298,11 +302,51 @@ export default function CreateProfile() {
                     <TouchableOpacity
                       key={type}
                       style={[styles.petTypeButton, petType === type && styles.petTypeButtonActive]}
-                      onPress={() => setPetType(type)}
+                      onPress={() => {
+                        setPetType(type);
+                        setPetBreed(''); // reset breed when type changes
+                      }}
                       testID={`profile-pet-${type}`}
                     >
                       <Text style={[styles.petTypeText, petType === type && styles.petTypeTextActive]}>
                         {type.charAt(0).toUpperCase() + type.slice(1)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Breed Selector */}
+              <View style={styles.section}>
+                <Text style={styles.label}>Breed</Text>
+                <TouchableOpacity
+                  style={styles.dateButton}
+                  onPress={() => setShowBreedPicker(true)}
+                  testID="profile-breed-btn"
+                >
+                  <Ionicons name="paw" size={20} color="#00d4ff" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.dateText, !petBreed && styles.dateTextPlaceholder]}>
+                      {petBreed || `Select ${petType} breed`}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-down" size={20} color="#808080" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Fixed Status */}
+              <View style={styles.section}>
+                <Text style={styles.label}>Fixed Status</Text>
+                <View style={styles.sexSelector}>
+                  {(['neutered', 'spayed', 'intact'] as const).map((status) => (
+                    <TouchableOpacity
+                      key={status}
+                      style={[styles.sexButton, fixedStatus === status && styles.sexButtonActive]}
+                      onPress={() => setFixedStatus(status)}
+                      testID={`profile-fixed-${status}`}
+                    >
+                      <Text style={[styles.sexText, fixedStatus === status && styles.sexTextActive]}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -320,6 +364,54 @@ export default function CreateProfile() {
                   onChangeText={setWeight}
                 />
               </View>
+
+              {/* Breed Picker Modal */}
+              <Modal
+                visible={showBreedPicker}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setShowBreedPicker(false)}
+              >
+                <View style={styles.modalOverlay}>
+                  <View style={[styles.modalContent, { maxHeight: '70%' }]}>
+                    <View style={styles.modalHeader}>
+                      <TouchableOpacity onPress={() => setShowBreedPicker(false)}>
+                        <Text style={styles.modalCancel}>Cancel</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.modalTitle}>
+                        Select {petType.charAt(0).toUpperCase() + petType.slice(1)} Breed
+                      </Text>
+                      <View style={{ width: 60 }} />
+                    </View>
+                    <ScrollView style={{ maxHeight: 500 }}>
+                      {getBreedsForPetType(petType).map((breed) => (
+                        <TouchableOpacity
+                          key={breed}
+                          style={[
+                            styles.breedItem,
+                            petBreed === breed && styles.breedItemActive,
+                          ]}
+                          onPress={() => {
+                            setPetBreed(breed);
+                            setShowBreedPicker(false);
+                          }}
+                          testID={`breed-${breed}`}
+                        >
+                          <Text style={[
+                            styles.breedItemText,
+                            petBreed === breed && styles.breedItemTextActive,
+                          ]}>
+                            {breed}
+                          </Text>
+                          {petBreed === breed && (
+                            <Ionicons name="checkmark" size={20} color="#00d4ff" />
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                </View>
+              </Modal>
             </>
           )}
 
@@ -422,4 +514,24 @@ const styles = StyleSheet.create({
   },
   submitButtonDisabled: { opacity: 0.5 },
   submitButtonText: { fontSize: 18, fontWeight: 'bold', color: '#000000' },
+  breedItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  breedItemActive: {
+    backgroundColor: 'rgba(0, 212, 255, 0.1)',
+  },
+  breedItemText: {
+    fontSize: 16,
+    color: '#ffffff',
+  },
+  breedItemTextActive: {
+    color: '#00d4ff',
+    fontWeight: '600',
+  },
 });
