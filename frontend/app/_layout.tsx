@@ -58,7 +58,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (bootstrapping) return;
     const inAuthGroup = segments[0] === 'auth';
-    const inTabs = segments[0] === '(tabs)';
+    const inTabs = (segments[0] as string) === '(tabs)';
     const isIndex = segments.length === 0 || segments[0] === undefined;
 
     if (token && user && (inAuthGroup || isIndex)) {

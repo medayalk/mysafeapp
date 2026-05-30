@@ -15,8 +15,21 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useStore } from '@/src/store';
 import { createScan } from '@/src/services/api';
+import WebCameraScanner from '@/src/components/WebCameraScanner';
 
 export default function Scanner() {
+  // On web, use a dedicated component that calls getUserMedia with strict
+  // high-resolution constraints (1080p ideal, up to 4K) and continuous AF.
+  if (Platform.OS === 'web') {
+    return <WebCameraScanner />;
+  }
+
+  // On native (iOS / Android) keep expo-camera but request the highest
+  // hardware resolution available + continuous autofocus + main wide lens.
+  return <NativeCameraScanner />;
+}
+
+function NativeCameraScanner() {
   const router = useRouter();
   const { activeProfile } = useStore();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -24,6 +37,8 @@ export default function Scanner() {
   const [autofocus, setAutofocus] = useState<'on' | 'off'>('on');
   const [torch, setTorch] = useState(false);
   const [focusPoint, setFocusPoint] = useState<{ x: number; y: number } | null>(null);
+  const [availableSizes, setAvailableSizes] = useState<string[]>([]);
+  const [pictureSize, setPictureSize] = useState<string | undefined>(undefined);
   const cameraRef = useRef<any>(null);
   const focusAnim = useRef(new Animated.Value(0)).current;
 
@@ -34,27 +49,42 @@ export default function Scanner() {
     })();
   }, []);
 
-  // Trigger autofocus refresh by toggling autofocus prop
+  // Once camera is ready, query supported picture sizes (Android) and pick the highest
+  const onCameraReady = async () => {
+    if (Platform.OS === 'android' && cameraRef.current) {
+      try {
+        const sizes: string[] = await cameraRef.current.getAvailablePictureSizesAsync();
+        if (sizes && sizes.length > 0) {
+          setAvailableSizes(sizes);
+          // Pick the highest resolution (sort by width*height descending)
+          const sorted = [...sizes].sort((a, b) => {
+            const [aw, ah] = a.split('x').map(Number);
+            const [bw, bh] = b.split('x').map(Number);
+            return (bw * bh) - (aw * ah);
+          });
+          // Cap at 4K (3840x2160) to avoid base64 payload issues
+          const best = sorted.find((s) => {
+            const [w, h] = s.split('x').map(Number);
+            return w <= 3840 && h <= 2160;
+          }) || sorted[0];
+          setPictureSize(best);
+        }
+      } catch (e) {
+        console.warn('Could not query picture sizes:', e);
+      }
+    }
+  };
+
   const triggerRefocus = (x: number, y: number) => {
     setFocusPoint({ x, y });
-    // Force autofocus to refresh by toggling
     setAutofocus('off');
     setTimeout(() => setAutofocus('on'), 50);
 
-    // Animate the focus indicator
     focusAnim.setValue(0);
     Animated.sequence([
-      Animated.timing(focusAnim, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true,
-      }),
+      Animated.timing(focusAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
       Animated.delay(700),
-      Animated.timing(focusAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
+      Animated.timing(focusAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
     ]).start(() => {
       setFocusPoint(null);
     });
@@ -67,18 +97,16 @@ export default function Scanner() {
 
   const capturePhoto = async () => {
     if (!cameraRef.current || !activeProfile) return;
-
     setScanning(true);
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.8,
+        quality: 1.0, // maximum quality
         base64: true,
         skipProcessing: false,
+        exif: false,
       });
 
-      if (!photo.base64) {
-        throw new Error('Failed to capture image');
-      }
+      if (!photo.base64) throw new Error('Failed to capture image');
 
       const result = await createScan(activeProfile.id, photo.base64);
       router.replace(`/results/${result.id}`);
@@ -87,16 +115,6 @@ export default function Scanner() {
         Alert.alert(
           'Image Unclear',
           'Please ensure the ingredients are in focus. Tap the screen to refocus before capturing.',
-          [{ text: 'OK' }]
-        );
-      } else if (error.response?.status === 403) {
-        Alert.alert(
-          'Premium Required',
-          error.response?.data?.detail || 'This feature requires Premium',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Upgrade', onPress: () => router.push('/(tabs)/settings') },
-          ]
         );
       } else {
         Alert.alert('Error', error.response?.data?.detail || 'Failed to scan product');
@@ -126,96 +144,94 @@ export default function Scanner() {
 
   return (
     <View style={styles.container}>
-      <CameraView 
-        style={styles.camera} 
-        ref={cameraRef} 
+      <CameraView
+        style={styles.camera}
+        ref={cameraRef}
         facing="back"
         autofocus={autofocus}
         enableTorch={torch}
         zoom={0}
         selectedLens={Platform.OS === 'ios' ? 'builtInWideAngleCamera' : undefined}
         mode="picture"
-      >
-        <Pressable style={styles.overlay} onPress={handleCameraTap} testID="camera-tap-area">
-          <View style={styles.header}>
-            <TouchableOpacity 
-              style={styles.iconButton}
-              onPress={() => router.back()}
-              testID="scanner-close-btn"
-            >
-              <Ionicons name="close" size={28} color="#ffffff" />
-            </TouchableOpacity>
-            <Text style={styles.headerText}>Tap to refocus</Text>
-            <TouchableOpacity 
-              style={[styles.iconButton, torch && styles.iconButtonActive]}
-              onPress={() => setTorch(!torch)}
-              testID="scanner-torch-btn"
-            >
-              <Ionicons 
-                name={torch ? "flash" : "flash-off"} 
-                size={24} 
-                color={torch ? "#ffaa00" : "#ffffff"} 
-              />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.scanFrame} pointerEvents="none">
-            <View style={[styles.corner, styles.cornerTopLeft]} />
-            <View style={[styles.corner, styles.cornerTopRight]} />
-            <View style={[styles.corner, styles.cornerBottomLeft]} />
-            <View style={[styles.corner, styles.cornerBottomRight]} />
-          </View>
-
-          {/* Tap-to-focus indicator */}
-          {focusPoint && (
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.focusIndicator,
-                {
-                  left: focusPoint.x - 35,
-                  top: focusPoint.y - 35,
-                  opacity: focusAnim,
-                  transform: [
-                    {
-                      scale: focusAnim.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [1.4, 1],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            >
-              <View style={styles.focusInner} />
-            </Animated.View>
-          )}
-
-          <View style={styles.bottom}>
-            <Text style={styles.instructionText}>
-              Position the ingredients label inside the frame{'\n'}
-              Tap anywhere on the screen to refocus
+        pictureSize={pictureSize}
+        onCameraReady={onCameraReady}
+      />
+      <Pressable style={styles.overlay} onPress={handleCameraTap} testID="camera-tap-area">
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => router.back()}
+            testID="scanner-close-btn"
+          >
+            <Ionicons name="close" size={28} color="#ffffff" />
+          </TouchableOpacity>
+          <View style={styles.resolutionBadge}>
+            <Ionicons name="videocam" size={14} color="#00d4ff" />
+            <Text style={styles.resolutionText}>
+              {pictureSize || (Platform.OS === 'ios' ? 'HD Wide' : 'Auto HD')}
             </Text>
-            
-            <TouchableOpacity 
-              style={[styles.captureButton, scanning && styles.captureButtonDisabled]}
-              onPress={capturePhoto}
-              disabled={scanning}
-              testID="scanner-capture-btn"
-            >
-              {scanning ? (
-                <View style={styles.captureButtonInner}>
-                  <ActivityIndicator color="#000000" />
-                </View>
-              ) : (
-                <View style={styles.captureButtonInner}>
-                  <Ionicons name="camera" size={32} color="#000000" />
-                </View>
-              )}
-            </TouchableOpacity>
           </View>
-        </Pressable>
-      </CameraView>
+          <TouchableOpacity
+            style={[styles.iconButton, torch && styles.iconButtonActive]}
+            onPress={() => setTorch(!torch)}
+            testID="scanner-torch-btn"
+          >
+            <Ionicons name={torch ? 'flash' : 'flash-off'} size={24} color={torch ? '#ffaa00' : '#ffffff'} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.scanFrame} pointerEvents="none">
+          <View style={[styles.corner, styles.cornerTopLeft]} />
+          <View style={[styles.corner, styles.cornerTopRight]} />
+          <View style={[styles.corner, styles.cornerBottomLeft]} />
+          <View style={[styles.corner, styles.cornerBottomRight]} />
+        </View>
+
+        {focusPoint && (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.focusIndicator,
+              {
+                left: focusPoint.x - 35,
+                top: focusPoint.y - 35,
+                opacity: focusAnim,
+                transform: [
+                  {
+                    scale: focusAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [1.4, 1],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.focusInner} />
+          </Animated.View>
+        )}
+
+        <View style={styles.bottom}>
+          <Text style={styles.instructionText}>
+            HD camera active. Tap anywhere to refocus.
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.captureButton, scanning && styles.captureButtonDisabled]}
+            onPress={capturePhoto}
+            disabled={scanning}
+            testID="scanner-capture-btn"
+          >
+            <View style={styles.captureButtonInner}>
+              {scanning ? (
+                <ActivityIndicator color="#000000" />
+              ) : (
+                <Ionicons name="camera" size={32} color="#000000" />
+              )}
+            </View>
+          </TouchableOpacity>
+        </View>
+      </Pressable>
     </View>
   );
 }
@@ -228,11 +244,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   camera: {
-    flex: 1,
-    width: '100%',
+    ...StyleSheet.absoluteFillObject,
   },
   overlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   header: {
@@ -256,14 +271,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#ffaa00',
   },
-  headerText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
+  resolutionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 212, 255, 0.3)',
+  },
+  resolutionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#00d4ff',
   },
   scanFrame: {
     flex: 1,
@@ -277,30 +299,10 @@ const styles = StyleSheet.create({
     height: 40,
     borderColor: '#00d4ff',
   },
-  cornerTopLeft: {
-    top: 0,
-    left: 0,
-    borderTopWidth: 4,
-    borderLeftWidth: 4,
-  },
-  cornerTopRight: {
-    top: 0,
-    right: 0,
-    borderTopWidth: 4,
-    borderRightWidth: 4,
-  },
-  cornerBottomLeft: {
-    bottom: 0,
-    left: 0,
-    borderBottomWidth: 4,
-    borderLeftWidth: 4,
-  },
-  cornerBottomRight: {
-    bottom: 0,
-    right: 0,
-    borderBottomWidth: 4,
-    borderRightWidth: 4,
-  },
+  cornerTopLeft: { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4 },
+  cornerTopRight: { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4 },
+  cornerBottomLeft: { bottom: 0, left: 0, borderBottomWidth: 4, borderLeftWidth: 4 },
+  cornerBottomRight: { bottom: 0, right: 0, borderBottomWidth: 4, borderRightWidth: 4 },
   focusIndicator: {
     position: 'absolute',
     width: 70,
