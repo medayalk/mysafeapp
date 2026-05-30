@@ -13,8 +13,14 @@ import { useStore } from '@/src/store';
 import { createScan } from '@/src/services/api';
 
 /**
- * Web Camera component using getUserMedia with strict high-resolution constraints.
- * Forces 1080p / up to 4K, environment-facing camera, with continuous autofocus where supported.
+ * Web Camera component using getUserMedia with explicit deviceId selection
+ * to avoid the ultra-wide lens that some browsers default to on multi-cam phones.
+ *
+ * Workflow:
+ *  1. Bootstrap stream (any back-facing camera) to unlock device labels.
+ *  2. enumerateDevices() → filter videoinput → pick the standard 1x rear camera,
+ *     explicitly avoiding labels containing "ultrawide" / "ultra-wide" / "ultra wide".
+ *  3. Seamlessly restart the stream with deviceId: { exact: selectedDeviceId }.
  */
 export default function WebCameraScanner() {
   const router = useRouter();
@@ -25,92 +31,197 @@ export default function WebCameraScanner() {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resolution, setResolution] = useState<string>('');
+  const [activeDeviceLabel, setActiveDeviceLabel] = useState<string>('');
   const [torchSupported, setTorchSupported] = useState(false);
   const [torch, setTorch] = useState(false);
 
   useEffect(() => {
-    startCamera();
+    initializeCamera();
     return () => {
       stopCamera();
     };
   }, []);
 
-  const startCamera = async () => {
+  /**
+   * Pick the best rear camera from a device list.
+   * Excludes ultra-wide / telephoto, prefers labels with "back"/"rear"/"environment".
+   */
+  const pickStandardRearCamera = (devices: MediaDeviceInfo[]): MediaDeviceInfo | null => {
+    const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+    if (videoInputs.length === 0) return null;
+
+    const isUltraWide = (label: string) => {
+      const lower = label.toLowerCase();
+      return (
+        lower.includes('ultrawide') ||
+        lower.includes('ultra-wide') ||
+        lower.includes('ultra wide') ||
+        lower.includes('wide angle 0.5') ||
+        lower.includes('0.5x')
+      );
+    };
+    const isTelephoto = (label: string) => {
+      const lower = label.toLowerCase();
+      return lower.includes('telephoto') || lower.includes('zoom');
+    };
+    const isFront = (label: string) => {
+      const lower = label.toLowerCase();
+      return lower.includes('front') || lower.includes('user') || lower.includes('selfie');
+    };
+    const isRear = (label: string) => {
+      const lower = label.toLowerCase();
+      return lower.includes('back') || lower.includes('rear') || lower.includes('environment');
+    };
+
+    // Filter out ultra-wide, telephoto, and front-facing
+    const eligible = videoInputs.filter(
+      (d) => !isUltraWide(d.label) && !isTelephoto(d.label) && !isFront(d.label),
+    );
+
+    if (eligible.length === 0) {
+      // If everything got filtered (labels missing/anomalous), at least drop ultra-wide & front
+      return (
+        videoInputs.find((d) => !isUltraWide(d.label) && !isFront(d.label)) ||
+        videoInputs[0]
+      );
+    }
+
+    // Prefer cameras explicitly tagged as rear
+    const explicitRear = eligible.find((d) => isRear(d.label));
+    if (explicitRear) return explicitRear;
+
+    // Otherwise the first eligible camera (browsers commonly list the main rear first)
+    return eligible[0];
+  };
+
+  /**
+   * Open a stream with given constraints + sensible defaults.
+   */
+  const openStream = async (
+    deviceId?: string,
+    useAdvanced: boolean = true,
+  ): Promise<MediaStream> => {
+    const baseVideo: any = {
+      width: { ideal: 1920, max: 3840 },
+      height: { ideal: 1080, max: 2160 },
+    };
+
+    if (deviceId) {
+      baseVideo.deviceId = { exact: deviceId };
+    } else {
+      baseVideo.facingMode = { ideal: 'environment' };
+    }
+
+    if (useAdvanced) {
+      baseVideo.advanced = [
+        { focusMode: 'continuous' },
+        { whiteBalanceMode: 'continuous' },
+        { exposureMode: 'continuous' },
+      ];
+    }
+
     try {
-      // First request with full high-resolution + continuous-focus constraints
-      const idealConstraints: any = {
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 },
-          advanced: [
-            { focusMode: 'continuous' },
-            { whiteBalanceMode: 'continuous' },
-            { exposureMode: 'continuous' },
-          ],
-        },
-        audio: false,
-      };
+      return await navigator.mediaDevices.getUserMedia({ video: baseVideo, audio: false });
+    } catch (advErr) {
+      // Retry without advanced constraints on browsers that reject them
+      if (useAdvanced) {
+        const fallbackVideo = { ...baseVideo };
+        delete fallbackVideo.advanced;
+        return await navigator.mediaDevices.getUserMedia({ video: fallbackVideo, audio: false });
+      }
+      throw advErr;
+    }
+  };
 
-      let stream: MediaStream;
+  /**
+   * Attach a stream to the <video> element and read back its capabilities.
+   */
+  const attachStream = async (stream: MediaStream, deviceLabel?: string) => {
+    streamRef.current = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play().catch(() => {});
+    }
+
+    const track = stream.getVideoTracks()[0];
+    const settings = track.getSettings();
+    setResolution(`${settings.width || '?'}x${settings.height || '?'}`);
+    setActiveDeviceLabel(deviceLabel || track.label || '');
+
+    // Apply continuous AF / WB / exposure if hardware supports it
+    const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
+    const constraintsToApply: any[] = [];
+    if (capabilities.focusMode?.includes('continuous')) {
+      constraintsToApply.push({ focusMode: 'continuous' });
+    }
+    if (capabilities.whiteBalanceMode?.includes('continuous')) {
+      constraintsToApply.push({ whiteBalanceMode: 'continuous' });
+    }
+    if (capabilities.exposureMode?.includes('continuous')) {
+      constraintsToApply.push({ exposureMode: 'continuous' });
+    }
+    if (constraintsToApply.length) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia(idealConstraints);
-      } catch (advErr) {
-        // Some browsers fail when advanced constraints are unsupported – retry without
-        console.warn('Advanced constraints failed, retrying without:', advErr);
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1920, max: 3840 },
-            height: { ideal: 1080, max: 2160 },
-          },
-          audio: false,
-        });
+        await track.applyConstraints({ advanced: constraintsToApply });
+      } catch (e) {
+        console.warn('applyConstraints failed:', e);
       }
+    }
+    setTorchSupported(!!capabilities.torch);
+  };
 
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-      }
-
-      // Read actual negotiated resolution + capabilities
-      const track = stream.getVideoTracks()[0];
-      const settings = track.getSettings();
-      setResolution(`${settings.width || '?'}x${settings.height || '?'}`);
-
-      // Apply continuous focus / torch if supported
-      const capabilities = track.getCapabilities ? track.getCapabilities() : ({} as any);
-      const constraintsToApply: any[] = [];
-      if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
-        constraintsToApply.push({ focusMode: 'continuous' });
-      }
-      if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('continuous')) {
-        constraintsToApply.push({ whiteBalanceMode: 'continuous' });
-      }
-      if (capabilities.exposureMode && capabilities.exposureMode.includes('continuous')) {
-        constraintsToApply.push({ exposureMode: 'continuous' });
-      }
-      if (constraintsToApply.length) {
-        try {
-          await track.applyConstraints({ advanced: constraintsToApply });
-        } catch (e) {
-          console.warn('applyConstraints failed:', e);
-        }
-      }
-      if (capabilities.torch) {
-        setTorchSupported(true);
-      }
-    } catch (err: any) {
-      console.error('Camera error:', err);
-      setError(err.message || 'Failed to access camera. Please grant camera permission.');
+  /**
+   * Stop currently active stream (without clearing the ref entirely).
+   */
+  const stopActiveStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
   };
 
   const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+    stopActiveStream();
+  };
+
+  /**
+   * Full initialization: bootstrap stream → enumerate → pick best rear cam → restart.
+   */
+  const initializeCamera = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError('Camera API not supported on this browser.');
+        return;
+      }
+
+      // 1) Bootstrap: any rear camera, just so labels become readable.
+      const bootstrapStream = await openStream(undefined, true);
+      await attachStream(bootstrapStream);
+
+      // 2) Enumerate now that we have permission (labels populated).
+      let devices: MediaDeviceInfo[] = [];
+      try {
+        devices = await navigator.mediaDevices.enumerateDevices();
+      } catch (e) {
+        console.warn('enumerateDevices failed:', e);
+      }
+
+      const target = pickStandardRearCamera(devices);
+      const currentDeviceId = bootstrapStream.getVideoTracks()[0]?.getSettings().deviceId;
+
+      // 3) If we found a better-suited rear camera, seamlessly swap.
+      if (target && target.deviceId && target.deviceId !== currentDeviceId) {
+        console.log('Switching to standard rear camera:', target.label);
+        stopActiveStream();
+        const finalStream = await openStream(target.deviceId, true);
+        await attachStream(finalStream, target.label);
+      } else if (target?.label) {
+        // No swap needed but update label
+        setActiveDeviceLabel(target.label);
+      }
+    } catch (err: any) {
+      console.error('Camera error:', err);
+      setError(err.message || 'Failed to access camera. Please grant camera permission.');
     }
   };
 
@@ -119,8 +230,7 @@ export default function WebCameraScanner() {
     const track = streamRef.current.getVideoTracks()[0];
     try {
       await track.applyConstraints({
-        // @ts-ignore – torch is non-standard
-        advanced: [{ torch: !torch }],
+        advanced: [{ torch: !torch } as any],
       });
       setTorch(!torch);
     } catch (e) {
@@ -128,22 +238,18 @@ export default function WebCameraScanner() {
     }
   };
 
-  const tapToFocus = async (e: React.MouseEvent<HTMLDivElement>) => {
+  const tapToFocus = async () => {
     if (!streamRef.current) return;
     const track = streamRef.current.getVideoTracks()[0];
-    const capabilities = track.getCapabilities ? track.getCapabilities() : ({} as any);
-
-    // Refocus by briefly switching modes (some browsers re-acquire AF on mode change)
-    if (capabilities.focusMode) {
+    const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
+    if (capabilities.focusMode?.includes('single-shot')) {
       try {
-        if (capabilities.focusMode.includes('single-shot')) {
-          await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' } as any] });
-          setTimeout(() => {
-            track
-              .applyConstraints({ advanced: [{ focusMode: 'continuous' } as any] })
-              .catch(() => {});
-          }, 100);
-        }
+        await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' } as any] });
+        setTimeout(() => {
+          track
+            .applyConstraints({ advanced: [{ focusMode: 'continuous' } as any] })
+            .catch(() => {});
+        }, 100);
       } catch (err) {
         console.warn('Focus refresh failed:', err);
       }
@@ -161,14 +267,12 @@ export default function WebCameraScanner() {
     try {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      // Use the actual streamed resolution (not the display size)
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Could not get canvas context');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // High quality JPEG export (0.92 quality keeps file size reasonable)
       const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
       const base64 = dataUrl.split(',')[1];
 
@@ -193,7 +297,7 @@ export default function WebCameraScanner() {
       <View style={styles.errorContainer}>
         <Ionicons name="camera-outline" size={64} color="#808080" />
         <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={startCamera}>
+        <TouchableOpacity style={styles.retryButton} onPress={initializeCamera}>
           <Text style={styles.retryText}>Retry</Text>
         </TouchableOpacity>
       </View>
@@ -241,12 +345,26 @@ export default function WebCameraScanner() {
               onPress={toggleTorch}
               testID="scanner-torch-btn"
             >
-              <Ionicons name={torch ? 'flash' : 'flash-off'} size={24} color={torch ? '#ffaa00' : '#ffffff'} />
+              <Ionicons
+                name={torch ? 'flash' : 'flash-off'}
+                size={24}
+                color={torch ? '#ffaa00' : '#ffffff'}
+              />
             </TouchableOpacity>
           ) : (
             <View style={styles.iconButton} />
           )}
         </View>
+
+        {!!activeDeviceLabel && (
+          <View style={styles.lensBadge} pointerEvents="none">
+            <Text style={styles.lensText} numberOfLines={1}>
+              {activeDeviceLabel.length > 40
+                ? activeDeviceLabel.slice(0, 40) + '…'
+                : activeDeviceLabel}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.scanFrame} pointerEvents="none">
           <View style={[styles.corner, styles.cornerTopLeft]} />
@@ -292,7 +410,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingTop: 60,
     paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingBottom: 12,
   },
   iconButton: {
     width: 44,
@@ -323,10 +441,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#00d4ff',
   },
+  lensBadge: {
+    alignSelf: 'center',
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 212, 255, 0.2)',
+  },
+  lensText: {
+    fontSize: 11,
+    color: '#a0a0a0',
+    fontWeight: '500',
+  },
   scanFrame: {
     flex: 1,
     marginHorizontal: 40,
-    marginVertical: 40,
+    marginVertical: 20,
     position: 'relative',
   },
   corner: {
