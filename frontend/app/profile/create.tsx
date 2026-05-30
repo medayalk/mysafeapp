@@ -10,10 +10,12 @@ import {
   Platform,
   Alert,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useStore } from '@/src/store';
 import { createProfile, getProfiles } from '@/src/services/api';
 
@@ -27,28 +29,39 @@ export default function CreateProfile() {
   
   // Common fields
   const [name, setName] = useState('');
-  const [ageValue, setAgeValue] = useState('');
-  const [ageUnit, setAgeUnit] = useState<'months' | 'years'>('years');
+  const [dob, setDob] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [weight, setWeight] = useState('');
   
   // Human fields
   const [biologicalSex, setBiologicalSex] = useState<'male' | 'female' | 'other'>('male');
   const [isPregnantNursing, setIsPregnantNursing] = useState(false);
   const [height, setHeight] = useState('');
-  const [skinType, setSkinType] = useState<'normal' | 'dry' | 'oily' | 'combination' | 'sensitive'>('normal');
-  const [hairType, setHairType] = useState<'straight' | 'wavy' | 'curly' | 'coily' | 'dry' | 'oily' | 'color-treated'>('straight');
   
   // Pet fields
   const [petType, setPetType] = useState<'dog' | 'cat' | 'bird' | 'exotic'>('dog');
   const [fixedStatus, setFixedStatus] = useState<'neutered' | 'spayed' | 'intact'>('intact');
 
+  const formatDob = (d: Date | null): string => {
+    if (!d) return 'Select Date of Birth';
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+
+  const computeAge = (d: Date | null): string => {
+    if (!d) return '';
+    const now = new Date();
+    const months = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
+    if (months < 12) return `${months} month${months !== 1 ? 's' : ''} old`;
+    const years = Math.floor(months / 12);
+    return `${years} year${years !== 1 ? 's' : ''} old`;
+  };
+
   const handleSubmit = async () => {
-    if (!name || !ageValue) {
-      Alert.alert('Error', 'Please fill required fields (Name, Age)');
+    if (!name || !dob) {
+      Alert.alert('Error', 'Please fill required fields (Name, Date of Birth)');
       return;
     }
 
-    // Check subscription limits
     if (profileType === 'pet' && user?.subscription_status === 'free') {
       Alert.alert('Premium Required', 'Pet profiles require Premium subscription');
       return;
@@ -59,8 +72,7 @@ export default function CreateProfile() {
       const profileData: any = {
         name,
         profile_type: profileType,
-        age_value: parseInt(ageValue),
-        age_unit: ageUnit,
+        date_of_birth: dob.toISOString().split('T')[0],
         weight_kg: weight ? parseFloat(weight) : undefined,
       };
 
@@ -68,16 +80,12 @@ export default function CreateProfile() {
         profileData.biological_sex = biologicalSex;
         profileData.is_pregnant_nursing = isPregnantNursing;
         profileData.height_cm = height ? parseFloat(height) : undefined;
-        profileData.skin_type = skinType;
-        profileData.hair_type = hairType;
       } else {
         profileData.pet_type = petType;
         profileData.fixed_status = fixedStatus;
       }
 
       const newProfile = await createProfile(profileData);
-      
-      // Refresh profiles list
       const profiles = await getProfiles();
       setProfiles(profiles);
       await setActiveProfile(newProfile);
@@ -88,6 +96,15 @@ export default function CreateProfile() {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to create profile');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDateChange = (_event: any, selectedDate?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+    }
+    if (selectedDate) {
+      setDob(selectedDate);
     }
   };
 
@@ -102,6 +119,7 @@ export default function CreateProfile() {
             <TouchableOpacity 
               style={styles.backButton}
               onPress={() => router.back()}
+              testID="profile-back-btn"
             >
               <Ionicons name="arrow-back" size={24} color="#ffffff" />
             </TouchableOpacity>
@@ -114,23 +132,12 @@ export default function CreateProfile() {
             <Text style={styles.label}>Profile Type</Text>
             <View style={styles.typeSelector}>
               <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  profileType === 'human' && styles.typeButtonActive,
-                ]}
+                style={[styles.typeButton, profileType === 'human' && styles.typeButtonActive]}
                 onPress={() => setProfileType('human')}
+                testID="profile-type-human"
               >
-                <Ionicons 
-                  name="person" 
-                  size={24} 
-                  color={profileType === 'human' ? '#00d4ff' : '#808080'} 
-                />
-                <Text style={[
-                  styles.typeText,
-                  profileType === 'human' && styles.typeTextActive,
-                ]}>
-                  Human
-                </Text>
+                <Ionicons name="person" size={24} color={profileType === 'human' ? '#00d4ff' : '#808080'} />
+                <Text style={[styles.typeText, profileType === 'human' && styles.typeTextActive]}>Human</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -146,18 +153,10 @@ export default function CreateProfile() {
                     setProfileType('pet');
                   }
                 }}
+                testID="profile-type-pet"
               >
-                <Ionicons 
-                  name="paw" 
-                  size={24} 
-                  color={profileType === 'pet' ? '#00d4ff' : '#808080'} 
-                />
-                <Text style={[
-                  styles.typeText,
-                  profileType === 'pet' && styles.typeTextActive,
-                ]}>
-                  Pet
-                </Text>
+                <Ionicons name="paw" size={24} color={profileType === 'pet' ? '#00d4ff' : '#808080'} />
+                <Text style={[styles.typeText, profileType === 'pet' && styles.typeTextActive]}>Pet</Text>
                 {user?.subscription_status === 'free' && (
                   <View style={styles.lockBadge}>
                     <Ionicons name="lock-closed" size={12} color="#ffaa00" />
@@ -167,7 +166,7 @@ export default function CreateProfile() {
             </View>
           </View>
 
-          {/* Common Fields */}
+          {/* Name */}
           <View style={styles.section}>
             <Text style={styles.label}>Name *</Text>
             <TextInput
@@ -176,56 +175,72 @@ export default function CreateProfile() {
               placeholderTextColor="#808080"
               value={name}
               onChangeText={setName}
+              testID="profile-name-input"
             />
           </View>
 
-          <View style={styles.row}>
-            <View style={[styles.section, { flex: 1 }]}>
-              <Text style={styles.label}>Age *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="0"
-                placeholderTextColor="#808080"
-                keyboardType="numeric"
-                value={ageValue}
-                onChangeText={setAgeValue}
-              />
-            </View>
-
-            <View style={[styles.section, { flex: 1 }]}>
-              <Text style={styles.label}>Unit</Text>
-              <View style={styles.unitSelector}>
-                <TouchableOpacity
-                  style={[
-                    styles.unitButton,
-                    ageUnit === 'months' && styles.unitButtonActive,
-                  ]}
-                  onPress={() => setAgeUnit('months')}
-                >
-                  <Text style={[
-                    styles.unitText,
-                    ageUnit === 'months' && styles.unitTextActive,
-                  ]}>
-                    Months
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.unitButton,
-                    ageUnit === 'years' && styles.unitButtonActive,
-                  ]}
-                  onPress={() => setAgeUnit('years')}
-                >
-                  <Text style={[
-                    styles.unitText,
-                    ageUnit === 'years' && styles.unitTextActive,
-                  ]}>
-                    Years
-                  </Text>
-                </TouchableOpacity>
+          {/* Date of Birth */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Date of Birth *</Text>
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => setShowDatePicker(true)}
+              testID="profile-dob-btn"
+            >
+              <Ionicons name="calendar" size={20} color="#00d4ff" />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.dateText, !dob && styles.dateTextPlaceholder]}>
+                  {formatDob(dob)}
+                </Text>
+                {dob && (
+                  <Text style={styles.ageHint}>{computeAge(dob)}</Text>
+                )}
               </View>
-            </View>
+              <Ionicons name="chevron-down" size={20} color="#808080" />
+            </TouchableOpacity>
           </View>
+
+          {/* Date picker - inline for Android, modal for iOS */}
+          {showDatePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={dob || new Date()}
+              mode="date"
+              display="default"
+              maximumDate={new Date()}
+              onChange={handleDateChange}
+            />
+          )}
+
+          {Platform.OS === 'ios' && (
+            <Modal
+              visible={showDatePicker}
+              transparent
+              animationType="slide"
+              onRequestClose={() => setShowDatePicker(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalContent}>
+                  <View style={styles.modalHeader}>
+                    <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                      <Text style={styles.modalCancel}>Cancel</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.modalTitle}>Select Date of Birth</Text>
+                    <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                      <Text style={styles.modalDone}>Done</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <DateTimePicker
+                    value={dob || new Date()}
+                    mode="date"
+                    display="spinner"
+                    maximumDate={new Date()}
+                    onChange={handleDateChange}
+                    textColor="#ffffff"
+                  />
+                </View>
+              </View>
+            </Modal>
+          )}
 
           {/* Human Specific Fields */}
           {profileType === 'human' && (
@@ -236,16 +251,11 @@ export default function CreateProfile() {
                   {(['male', 'female', 'other'] as const).map((sex) => (
                     <TouchableOpacity
                       key={sex}
-                      style={[
-                        styles.sexButton,
-                        biologicalSex === sex && styles.sexButtonActive,
-                      ]}
+                      style={[styles.sexButton, biologicalSex === sex && styles.sexButtonActive]}
                       onPress={() => setBiologicalSex(sex)}
+                      testID={`profile-sex-${sex}`}
                     >
-                      <Text style={[
-                        styles.sexText,
-                        biologicalSex === sex && styles.sexTextActive,
-                      ]}>
+                      <Text style={[styles.sexText, biologicalSex === sex && styles.sexTextActive]}>
                         {sex.charAt(0).toUpperCase() + sex.slice(1)}
                       </Text>
                     </TouchableOpacity>
@@ -258,11 +268,9 @@ export default function CreateProfile() {
                   <TouchableOpacity
                     style={styles.checkbox}
                     onPress={() => setIsPregnantNursing(!isPregnantNursing)}
+                    testID="profile-pregnant-toggle"
                   >
-                    <View style={[
-                      styles.checkboxBox,
-                      isPregnantNursing && styles.checkboxBoxActive,
-                    ]}>
+                    <View style={[styles.checkboxBox, isPregnantNursing && styles.checkboxBoxActive]}>
                       {isPregnantNursing && (
                         <Ionicons name="checkmark" size={16} color="#000000" />
                       )}
@@ -309,16 +317,11 @@ export default function CreateProfile() {
                   {(['dog', 'cat', 'bird', 'exotic'] as const).map((type) => (
                     <TouchableOpacity
                       key={type}
-                      style={[
-                        styles.petTypeButton,
-                        petType === type && styles.petTypeButtonActive,
-                      ]}
+                      style={[styles.petTypeButton, petType === type && styles.petTypeButtonActive]}
                       onPress={() => setPetType(type)}
+                      testID={`profile-pet-${type}`}
                     >
-                      <Text style={[
-                        styles.petTypeText,
-                        petType === type && styles.petTypeTextActive,
-                      ]}>
+                      <Text style={[styles.petTypeText, petType === type && styles.petTypeTextActive]}>
                         {type.charAt(0).toUpperCase() + type.slice(1)}
                       </Text>
                     </TouchableOpacity>
@@ -344,6 +347,7 @@ export default function CreateProfile() {
             style={[styles.submitButton, loading && styles.submitButtonDisabled]}
             onPress={handleSubmit}
             disabled={loading}
+            testID="profile-submit-btn"
           >
             {loading ? (
               <ActivityIndicator color="#000000" />
@@ -358,196 +362,84 @@ export default function CreateProfile() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 40,
-  },
+  container: { flex: 1 },
+  scrollContent: { paddingBottom: 40 },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 24,
-    paddingTop: 60,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 24, paddingTop: 60,
   },
-  backButton: {
-    padding: 8,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#ffffff',
-  },
-  section: {
-    paddingHorizontal: 24,
-    marginBottom: 24,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
+  backButton: { padding: 8 },
+  title: { fontSize: 20, fontWeight: 'bold', color: '#ffffff' },
+  section: { paddingHorizontal: 24, marginBottom: 24 },
+  row: { flexDirection: 'row', gap: 12 },
+  label: { fontSize: 14, fontWeight: '600', color: '#ffffff', marginBottom: 8 },
   input: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 16, fontSize: 16, color: '#ffffff',
+  },
+  dateButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)',
     padding: 16,
-    fontSize: 16,
-    color: '#ffffff',
   },
-  typeSelector: {
-    flexDirection: 'row',
-    gap: 12,
+  dateText: { fontSize: 16, color: '#ffffff', fontWeight: '500' },
+  dateTextPlaceholder: { color: '#808080', fontWeight: '400' },
+  ageHint: { fontSize: 12, color: '#00d4ff', marginTop: 4 },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' },
+  modalContent: { backgroundColor: '#1a1a2e', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 40 },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
+  modalCancel: { fontSize: 16, color: '#808080' },
+  modalDone: { fontSize: 16, fontWeight: 'bold', color: '#00d4ff' },
+  modalTitle: { fontSize: 16, fontWeight: '600', color: '#ffffff' },
+  typeSelector: { flexDirection: 'row', gap: 12 },
   typeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    padding: 16,
-    borderRadius: 12,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, padding: 16, borderRadius: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 2, borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  typeButtonActive: {
-    borderColor: '#00d4ff',
-    backgroundColor: 'rgba(0, 212, 255, 0.1)',
-  },
-  typeButtonLocked: {
-    opacity: 0.5,
-  },
-  typeText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#808080',
-  },
-  typeTextActive: {
-    color: '#00d4ff',
-  },
-  lockBadge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-  },
-  unitSelector: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    overflow: 'hidden',
-  },
-  unitButton: {
-    flex: 1,
-    padding: 16,
-    alignItems: 'center',
-  },
-  unitButtonActive: {
-    backgroundColor: '#00d4ff',
-  },
-  unitText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#808080',
-  },
-  unitTextActive: {
-    color: '#000000',
-  },
-  sexSelector: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  typeButtonActive: { borderColor: '#00d4ff', backgroundColor: 'rgba(0, 212, 255, 0.1)' },
+  typeButtonLocked: { opacity: 0.5 },
+  typeText: { fontSize: 16, fontWeight: '600', color: '#808080' },
+  typeTextActive: { color: '#00d4ff' },
+  lockBadge: { position: 'absolute', top: 8, right: 8 },
+  sexSelector: { flexDirection: 'row', gap: 8 },
   sexButton: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
+    flex: 1, padding: 12, borderRadius: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)',
     alignItems: 'center',
   },
-  sexButtonActive: {
-    borderColor: '#00d4ff',
-    backgroundColor: 'rgba(0, 212, 255, 0.1)',
-  },
-  sexText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#808080',
-  },
-  sexTextActive: {
-    color: '#00d4ff',
-  },
-  checkbox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
+  sexButtonActive: { borderColor: '#00d4ff', backgroundColor: 'rgba(0, 212, 255, 0.1)' },
+  sexText: { fontSize: 14, fontWeight: '600', color: '#808080' },
+  sexTextActive: { color: '#00d4ff' },
+  checkbox: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   checkboxBox: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    borderWidth: 2,
+    width: 24, height: 24, borderRadius: 6, borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
-  checkboxBoxActive: {
-    backgroundColor: '#00d4ff',
-    borderColor: '#00d4ff',
-  },
-  checkboxText: {
-    fontSize: 14,
-    color: '#ffffff',
-  },
-  petTypeSelector: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  checkboxBoxActive: { backgroundColor: '#00d4ff', borderColor: '#00d4ff' },
+  checkboxText: { fontSize: 14, color: '#ffffff' },
+  petTypeSelector: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   petTypeButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 20,
+    paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  petTypeButtonActive: {
-    borderColor: '#00d4ff',
-    backgroundColor: 'rgba(0, 212, 255, 0.1)',
-  },
-  petTypeText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#808080',
-  },
-  petTypeTextActive: {
-    color: '#00d4ff',
-  },
+  petTypeButtonActive: { borderColor: '#00d4ff', backgroundColor: 'rgba(0, 212, 255, 0.1)' },
+  petTypeText: { fontSize: 14, fontWeight: '600', color: '#808080' },
+  petTypeTextActive: { color: '#00d4ff' },
   submitButton: {
-    marginHorizontal: 24,
-    marginTop: 8,
-    backgroundColor: '#00d4ff',
-    padding: 18,
-    borderRadius: 12,
-    alignItems: 'center',
+    marginHorizontal: 24, marginTop: 8,
+    backgroundColor: '#00d4ff', padding: 18,
+    borderRadius: 12, alignItems: 'center',
   },
-  submitButtonDisabled: {
-    opacity: 0.5,
-  },
-  submitButtonText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
+  submitButtonDisabled: { opacity: 0.5 },
+  submitButtonText: { fontSize: 18, fontWeight: 'bold', color: '#000000' },
 });

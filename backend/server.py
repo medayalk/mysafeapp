@@ -60,7 +60,9 @@ class Token(BaseModel):
 class ProfileCreate(BaseModel):
     name: str
     profile_type: Literal["human", "pet"]
-    # Human fields
+    # Date of Birth (preferred) - ISO format: YYYY-MM-DD
+    date_of_birth: Optional[str] = None
+    # Legacy age fields (kept for backward compat)
     age_value: Optional[int] = None
     age_unit: Optional[Literal["months", "years"]] = "years"
     biological_sex: Optional[Literal["male", "female", "other"]] = None
@@ -81,6 +83,7 @@ class Profile(BaseModel):
     user_id: str
     name: str
     profile_type: Literal["human", "pet"]
+    date_of_birth: Optional[str] = None
     age_value: Optional[int] = None
     age_unit: Optional[Literal["months", "years"]] = "years"
     biological_sex: Optional[Literal["male", "female", "other"]] = None
@@ -161,6 +164,20 @@ def calculate_age_in_months(age_value: int, age_unit: str) -> int:
         return age_value * 12
     return age_value
 
+def calculate_age_months_from_dob(dob_str: Optional[str]) -> Optional[int]:
+    """Calculate age in months from a YYYY-MM-DD DOB string"""
+    if not dob_str:
+        return None
+    try:
+        dob = datetime.fromisoformat(dob_str.split('T')[0])
+        now = datetime.utcnow()
+        months = (now.year - dob.year) * 12 + (now.month - dob.month)
+        if now.day < dob.day:
+            months -= 1
+        return max(0, months)
+    except Exception:
+        return None
+
 def get_age_category(age_months: int) -> str:
     """Determine age category for humans"""
     if age_months <= 12:
@@ -239,7 +256,10 @@ async def score_with_ai(ingredients_text: str, category: str, profile: Dict) -> 
         profile_context = f"Profile Type: {profile['profile_type']}\n"
         
         if profile['profile_type'] == 'human':
-            age_months = calculate_age_in_months(profile.get('age_value', 300), profile.get('age_unit', 'years'))
+            # Prefer DOB-based age calculation; fallback to age_value/age_unit
+            age_months = calculate_age_months_from_dob(profile.get('date_of_birth'))
+            if age_months is None:
+                age_months = calculate_age_in_months(profile.get('age_value', 300), profile.get('age_unit', 'years'))
             age_category = get_age_category(age_months)
             profile_context += f"Age Category: {age_category} ({age_months} months)\n"
             profile_context += f"Sex: {profile.get('biological_sex', 'unknown')}\n"
@@ -249,8 +269,14 @@ async def score_with_ai(ingredients_text: str, category: str, profile: Dict) -> 
             profile_context += f"Medical Conditions: {', '.join(profile.get('medical_conditions', []))}\n"
             profile_context += f"Allergies: {', '.join(profile.get('allergies', []))}\n"
         else:  # pet
+            # Compute pet age from DOB or fallback to age_value/unit
+            pet_age_months = calculate_age_months_from_dob(profile.get('date_of_birth'))
+            if pet_age_months is not None:
+                age_display = f"{pet_age_months // 12} years {pet_age_months % 12} months"
+            else:
+                age_display = f"{profile.get('age_value', 0)} {profile.get('age_unit', 'years')}"
             profile_context += f"Pet Type: {profile.get('pet_type', 'unknown')}\n"
-            profile_context += f"Age: {profile.get('age_value', 0)} {profile.get('age_unit', 'years')}\n"
+            profile_context += f"Age: {age_display}\n"
             profile_context += f"Weight: {profile.get('weight_kg', 0)} kg\n"
             profile_context += f"Fixed Status: {profile.get('fixed_status', 'unknown')}\n"
             profile_context += f"Medical Conditions: {', '.join(profile.get('pet_medical_conditions', []))}\n"
